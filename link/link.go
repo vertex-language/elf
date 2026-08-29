@@ -37,6 +37,12 @@ type Linker struct {
 	img  *image.Image
 	reqs *backend.Reqs
 
+	// needed are the shared inputs that became DT_NEEDED entries, captured
+	// from the resolver once resolution finishes. Consumed once
+	// link/dynamic.go lands with M5; until then a dynamic link fails before
+	// bindDynamic reads it.
+	needed []*image.Input
+
 	// thunks maps a branch target to the trampoline that reaches it, one per
 	// output section. redirect records which relocation sites were sent
 	// through one, so that Apply can substitute the trampoline's address for
@@ -186,6 +192,20 @@ func (l *Linker) Link() (*image.Image, error) {
 	if err := l.be.Scan(img, l.reqs); err != nil {
 		return nil, err
 	}
+
+	// 5a. Decide which GOT and PLT slots the dynamic loader fills and which
+	//     the linker can fill directly, now that scanning is done but before
+	//     registerSynthetics sizes .rela.dyn and .rela.plt from the result.
+	if err := l.wireGotPlt(img); err != nil {
+		return nil, err
+	}
+
+	// 5b. Give every copy-relocated symbol its own storage, now that Scan has
+	//     decided which symbols need one.
+	if err := l.processCopyRelocs(img); err != nil {
+		return nil, err
+	}
+
 	if err := l.registerSynthetics(img); err != nil {
 		return nil, err
 	}
@@ -248,11 +268,14 @@ func (l *Linker) Link() (*image.Image, error) {
 		return nil, err
 	}
 
-	// 9. Contents, then relocations.
-	if err := l.writeChunks(img); err != nil {
+	// 9. Contents, then relocations. Synthetics generate first: a Synthetic's
+	//    Chunk has no ChunkSource of its own, so writeChunks' call to Data
+	//    would fail on any synthetic that reached this point without content
+	//    — .got and .plt included, whenever a link actually needs one.
+	if err := image.GenerateSynthetics(img); err != nil {
 		return nil, err
 	}
-	if err := image.GenerateSynthetics(img); err != nil {
+	if err := l.writeChunks(img); err != nil {
 		return nil, err
 	}
 	if err := l.applyAll(img); err != nil {

@@ -165,14 +165,37 @@ type Flagger interface {
 	MergeFlags(out, in uint32) (uint32, error)
 }
 
-// AsDynamic, AsRelaxer, AsThunker, and AsFlagger report whether a backend
-// implements an optional interface. They exist so that link asks in one place
-// and every call site reads the same way.
+// TlsOffsetter is implemented by backends that can compute the link-time
+// offset from the thread pointer to a symbol in the output's static TLS
+// block.
+//
+// This is the one piece of thread-local addressing link needs to do itself
+// rather than leaving entirely to Apply: an initial-exec GOT slot's content,
+// for a symbol this link resolves locally, is a plain number generated the
+// same way regardless of which chunk or synthetic section it ends up in, and
+// generating it does not belong in a backend's Apply, which only ever writes
+// into one chunk's own bytes at a relocation site. Architectures split the
+// static block relative to the thread pointer two different ways — variant
+// II (x86) subtracts from the block's end and lands negative; variant I
+// (ARM, RISC-V) adds a fixed or ABI-defined header to an offset from the
+// start — and TpOff is where that difference lives.
+type TlsOffsetter interface {
+	// TpOff returns the thread-pointer-relative offset of the byte at
+	// symAddr, which lies within the static TLS block described by tlsAddr,
+	// tlsSize, and tlsAlign — the same three values link.Reqs.TlsAddr,
+	// TlsSize, and TlsAlign carry once layout has placed PT_TLS.
+	TpOff(tlsAddr, tlsSize, tlsAlign, symAddr uint64) int64
+}
 
-func AsDynamic(b Backend) (Dynamic, bool) { d, ok := b.(Dynamic); return d, ok }
-func AsRelaxer(b Backend) (Relaxer, bool) { r, ok := b.(Relaxer); return r, ok }
-func AsThunker(b Backend) (Thunker, bool) { t, ok := b.(Thunker); return t, ok }
-func AsFlagger(b Backend) (Flagger, bool) { f, ok := b.(Flagger); return f, ok }
+// AsDynamic, AsRelaxer, AsThunker, AsFlagger, and AsTlsOffsetter report
+// whether a backend implements an optional interface. They exist so that
+// link asks in one place and every call site reads the same way.
+
+func AsDynamic(b Backend) (Dynamic, bool)           { d, ok := b.(Dynamic); return d, ok }
+func AsRelaxer(b Backend) (Relaxer, bool)           { r, ok := b.(Relaxer); return r, ok }
+func AsThunker(b Backend) (Thunker, bool)           { t, ok := b.(Thunker); return t, ok }
+func AsFlagger(b Backend) (Flagger, bool)           { f, ok := b.(Flagger); return f, ok }
+func AsTlsOffsetter(b Backend) (TlsOffsetter, bool) { t, ok := b.(TlsOffsetter); return t, ok }
 
 var (
 	mu       sync.RWMutex

@@ -41,6 +41,10 @@ func (l *Linker) registerSynthetics(img *image.Image) error {
 		pad.Align = 1
 	}
 
+	if err := l.registerDynamicSections(img, in); err != nil {
+		return err
+	}
+
 	if l.opts.StripAll {
 		return nil
 	}
@@ -219,16 +223,16 @@ func (l *Linker) commit(img *image.Image) error {
 	return nil
 }
 
-// bindDynamic fills in the dynamic linking structures.
+// bindDynamic is a placeholder in the pipeline's sequence of named steps.
 //
-// A static link has none, which is the whole of this function until
-// link/dynamic.go lands with M5.
-func (l *Linker) bindDynamic(img *image.Image) error {
-	if !l.reqs.Dynamic {
-		return nil
-	}
-	return fmt.Errorf("link: dynamic output is not implemented yet")
-}
+// Everything dynamic linking needs is decided earlier, in link/dynamic.go:
+// registerDynamicSections (called from registerSynthetics, step 5) creates
+// and sizes every dynamic section before Seal, and each one's generator
+// resolves the address-dependent parts of its own contents once layout runs.
+// There is nothing left for this step to do, but it stays as the named place
+// a future dynamic-linking concern that genuinely needs to run this late —
+// after the layout fixpoint, before Freeze — would go.
+func (l *Linker) bindDynamic(img *image.Image) error { return nil }
 
 // emit writes the ELF header, the program headers, and the section header
 // table into the output buffer.

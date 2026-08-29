@@ -161,10 +161,19 @@ func (s *OutputSection) Bound(at Anchor) uint64 {
 
 // Add places a chunk in this section and raises the section's alignment to
 // cover it. Offsets are assigned later, by layout.
+//
+// It also adopts the chunk's Entsize when the chunk has one and the section
+// does not yet: sh_entsize is a fact about the section, but every chunk that
+// is going to define it — a synthetic .symtab or .dynsym, an input .rela.text
+// — carries it on itself, and a section left at zero produces a symbol or
+// relocation table that tools such as readelf refuse to parse.
 func (s *OutputSection) Add(ch *Chunk) {
 	ch.Out = s
 	if ch.Align > s.Align {
 		s.Align = ch.Align
+	}
+	if ch.Entsize != 0 && s.Entsize == 0 {
+		s.Entsize = ch.Entsize
 	}
 	s.Chunks = append(s.Chunks, ch)
 }

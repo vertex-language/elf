@@ -107,11 +107,17 @@ type Sym struct {
 	// Flags are the backend's scan decisions.
 	Flags SymFlags
 
-	// GotIndex, PltIndex, and DynIndex are slot assignments, NoIndex until
-	// assigned.
+	// GotIndex, PltIndex, DynIndex, and GotPltIndex are slot assignments,
+	// NoIndex until assigned.
 	GotIndex int32
 	PltIndex int32
 	DynIndex int32
+
+	// GotPltIndex is the symbol's slot in .got.plt, separate from PltIndex:
+	// .plt and .iplt entries share one .got.plt, allocated by AddPlt and
+	// AddIPlt in call order, and PltIndex alone is ambiguous once both kinds
+	// of entry appear in the same link. See Reqs.GotPltSlotAddr.
+	GotPltIndex int32
 }
 
 // SymFlags records what the scan pass decided this symbol needs.
@@ -233,11 +239,12 @@ func (t *SymbolTable) Insert(name string) (*Sym, bool) {
 		return s, false
 	}
 	s := &Sym{
-		Name:     name,
-		Class:    SymUndefined,
-		GotIndex: NoIndex,
-		PltIndex: NoIndex,
-		DynIndex: NoIndex,
+		Name:        name,
+		Class:       SymUndefined,
+		GotIndex:    NoIndex,
+		PltIndex:    NoIndex,
+		DynIndex:    NoIndex,
+		GotPltIndex: NoIndex,
 	}
 	t.byName[name] = s
 	t.order = append(t.order, s)
@@ -251,12 +258,13 @@ func (t *SymbolTable) Insert(name string) (*Sym, bool) {
 // They still need to exist as Syms because relocations point at them.
 func (t *SymbolTable) Local(name string) *Sym {
 	return &Sym{
-		Name:     name,
-		Class:    SymUndefined,
-		Bind:     elf.STB_LOCAL,
-		GotIndex: NoIndex,
-		PltIndex: NoIndex,
-		DynIndex: NoIndex,
+		Name:        name,
+		Class:       SymUndefined,
+		Bind:        elf.STB_LOCAL,
+		GotIndex:    NoIndex,
+		PltIndex:    NoIndex,
+		DynIndex:    NoIndex,
+		GotPltIndex: NoIndex,
 	}
 }
 

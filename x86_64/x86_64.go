@@ -96,10 +96,10 @@ func (Backend) Classify(typ uint32) backend.Kind {
 		elf.R_X86_64_CODE_6_GOTPC32_TLSDESC:
 		return backend.KindTlsDesc
 
-	// The remaining types — COPY, GLOB_DAT, JUMP_SLOT, RELATIVE, IRELATIVE,
-	// DTPMOD64 — are written by the linker for the dynamic loader and never
-	// appear in an input object. Reaching one here means the input is
-	// malformed, so it is left unknown rather than given a meaning.
+		// The remaining types — COPY, GLOB_DAT, JUMP_SLOT, RELATIVE, IRELATIVE,
+		// DTPMOD64 — are written by the linker for the dynamic loader and never
+		// appear in an input object. Reaching one here means the input is
+		// malformed, so it is left unknown rather than given a meaning.
 	}
 	return backend.KindUnknown
 }
@@ -144,3 +144,16 @@ func (Backend) DynType(k backend.DynKind) (uint32, bool) {
 // through a PLT entry even when it is local, because the address a reference
 // wants is what the resolver returns rather than the resolver itself.
 func ifunc(s *image.Sym) bool { return s != nil && s.Type == elf.STT_GNU_IFUNC }
+
+// TpOff implements backend.TlsOffsetter.
+//
+// x86-64 uses TLS variant II: the static block sits immediately below the
+// thread pointer, so a symbol's offset is its position within the block minus
+// the block's own aligned size, and is therefore negative.
+func (Backend) TpOff(tlsAddr, tlsSize, tlsAlign, symAddr uint64) int64 {
+	if tlsAlign == 0 {
+		tlsAlign = 1
+	}
+	size := (tlsSize + tlsAlign - 1) &^ (tlsAlign - 1)
+	return int64(symAddr) - int64(tlsAddr) - int64(size)
+}

@@ -508,6 +508,22 @@ func (r *resolver) merge(in *image.Input, s *obj.Symbol, chunks map[uint32]*imag
 
 	if !s.Defined() {
 		g.Referenced = true
+		// Bind and Type otherwise stay at their zero value — STB_LOCAL,
+		// STT_NOTYPE — for a name nothing in the link ever defines, which is
+		// wrong in two ways: Sym.Weak reads Bind, so an undefined symbol
+		// every reference to which is weak would wrongly report as required;
+		// and a dynamic symbol table entry naming this reference for the
+		// loader to resolve would claim to be local, which a loader never
+		// looks up by name at all. Only STB_GLOBAL and STB_WEAK reach here —
+		// a local reference does not create a cross-object undefined symbol,
+		// see the early return above — so the strongest bind across every
+		// reference is exactly "global unless every one of them was weak".
+		if s.Type != elf.STT_NOTYPE && g.Type == elf.STT_NOTYPE {
+			g.Type = s.Type
+		}
+		if g.Bind != elf.STB_GLOBAL {
+			g.Bind = s.Bind
+		}
 		if cur, ok := r.rank[g]; !ok || cur < cand {
 			r.rank[g] = cand
 		}

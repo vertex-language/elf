@@ -80,12 +80,12 @@ const NoSlot int64 = -1
 
 // DynReloc is one relocation for the dynamic loader to apply.
 //
-// Offset is a run-time address rather than a file offset, which is what
-// r_offset holds in a linked object; it is filled in during generation, once
-// the slot it names has an address.
+// It carries no run-time address of its own: at scan time, when it is
+// queued, nothing has one yet. Exactly one of Slot or Chunk names what Off is
+// measured against, and Address resolves the two into a real address once
+// generation runs after addresses exist.
 type DynReloc struct {
-	Offset uint64
-	Kind   DynKind
+	Kind DynKind
 
 	// Sym is the symbol the loader must look up, or nil for the relocations
 	// that need none — RELATIVE and IRELATIVE carry a value, not a name.
@@ -93,11 +93,30 @@ type DynReloc struct {
 
 	Addend int64
 
-	// Slot is the synthetic and offset this relocation targets, so that
-	// generation can resolve Offset after addresses exist without
-	// re-deriving which table the slot was in.
-	Slot     *image.Synthetic
-	SlotOff  uint64
+	// Slot is a synthetic section — .got, .got.plt — that this relocation
+	// targets a slot within.
+	Slot *image.Synthetic
+
+	// Chunk is an ordinary input chunk this relocation targets a byte within,
+	// for the case a KindAbs reference in a PIC output needs RELATIVE or
+	// GLOB_DAT rather than a value resolved at link time. Exactly one of Slot
+	// and Chunk is set.
+	Chunk *image.Chunk
+
+	// Off is the byte offset within whichever of Slot or Chunk is set.
+	Off uint64
+}
+
+// Address resolves the run-time address this relocation targets. It is
+// meaningful only after layout has placed every chunk.
+func (d DynReloc) Address() uint64 {
+	if d.Slot != nil {
+		return d.Slot.Chunk.Addr() + d.Off
+	}
+	if d.Chunk != nil {
+		return d.Chunk.Addr() + d.Off
+	}
+	return d.Off
 }
 
 // NewReqs returns an empty Reqs for a backend's geometry.
@@ -181,8 +200,14 @@ func (r *Reqs) AddGot(img *image.Image, sym *image.Sym) uint64 {
 }
 
 // AddTlsGot assigns sym the consecutive slots a general-dynamic reference
-// needs, and returns the first slot's offset.
+// needs, and returns the first slot's offset. Repeated calls for the same
+// symbol return the existing slot: a general-dynamic access is often more
+// than one relocation against the same symbol (an ADRP/ADD pair on AArch64,
+// for instance), and every one of them must agree on where the pair lives.
 func (r *Reqs) AddTlsGot(img *image.Image, sym *image.Sym) uint64 {
+	if sym != nil && sym.GotIndex != image.NoIndex {
+		return uint64(sym.GotIndex) * r.shape.EntrySize
+	}
 	got := r.NeedGot(img)
 	n := r.shape.TlsGdEntries
 	if n < 1 {
@@ -223,9 +248,10 @@ func (r *Reqs) AddPlt(img *image.Image, sym *image.Sym) int {
 	if r.SecPlt != nil {
 		r.SecPlt.Grow(img, r.pltShape.SecEntrySize)
 	}
-	gotplt.Grow(img, r.shape.EntrySize)
+	gotOff := gotplt.Grow(img, r.shape.EntrySize)
 
 	sym.PltIndex = int32(idx)
+	sym.GotPltIndex = int32(gotOff / r.shape.EntrySize)
 	sym.Set(image.NeedsPlt)
 	return idx
 }
@@ -241,9 +267,10 @@ func (r *Reqs) AddIPlt(img *image.Image, sym *image.Sym) int {
 	idx := r.ipltSlots
 	r.ipltSlots++
 	iplt.Grow(img, r.pltShape.IPltEntrySize)
-	gotplt.Grow(img, r.shape.EntrySize)
+	gotOff := gotplt.Grow(img, r.shape.EntrySize)
 
 	sym.PltIndex = int32(idx)
+	sym.GotPltIndex = int32(gotOff / r.shape.EntrySize)
 	sym.Set(image.NeedsPlt)
 	return idx
 }
@@ -282,18 +309,30 @@ func (r *Reqs) GotSlotAddr(sym *image.Sym) (uint64, error) {
 }
 
 // GotPltSlotAddr returns the address of the .got.plt slot belonging to sym's
-// PLT entry, reserved prefix included.
+// PLT entry.
+//
+// This is GotPltIndex, not PltIndex plus the reserved prefix: .plt and .iplt
+// entries share one .got.plt, assigned by two independent counters (pltSlots,
+// ipltSlots) that only agree with call order when nothing of the other kind
+// is interleaved. GotPltIndex instead records the slot AddPlt or AddIPlt
+// actually grew at allocation time, so it is correct regardless of the mix.
 func (r *Reqs) GotPltSlotAddr(sym *image.Sym) (uint64, error) {
-	if sym.PltIndex == image.NoIndex {
-		return 0, fmt.Errorf("backend: %s has no PLT entry", sym)
+	if sym.GotPltIndex == image.NoIndex {
+		return 0, fmt.Errorf("backend: %s has no .got.plt slot", sym)
 	}
-	i := uint64(r.shape.PltReserved) + uint64(sym.PltIndex)
-	return r.GotPltAddr() + i*r.shape.EntrySize, nil
+	return r.GotPltAddr() + uint64(sym.GotPltIndex)*r.shape.EntrySize, nil
 }
 
 // PltEntryAddr returns the address a call to sym should branch to: the
-// .plt.sec entry when the format has a second table, the .plt entry otherwise.
+// .iplt entry for a non-preemptible ifunc, the .plt.sec entry when the format
+// has a second table, or the .plt entry otherwise.
 func (r *Reqs) PltEntryAddr(sym *image.Sym) (uint64, error) {
+	if sym.Type == elf.STT_GNU_IFUNC {
+		if r.IPlt == nil || sym.PltIndex == image.NoIndex {
+			return 0, fmt.Errorf("backend: %s has no .iplt entry", sym)
+		}
+		return r.IPlt.Chunk.Addr() + uint64(sym.PltIndex)*r.pltShape.IPltEntrySize, nil
+	}
 	if sym.PltIndex == image.NoIndex {
 		return 0, fmt.Errorf("backend: %s has no PLT entry", sym)
 	}
@@ -302,6 +341,19 @@ func (r *Reqs) PltEntryAddr(sym *image.Sym) (uint64, error) {
 		return r.SecPlt.Chunk.Addr() + i*r.pltShape.SecEntrySize, nil
 	}
 	return r.PltAddr() + r.pltShape.EntryOffset(int(i)), nil
+}
+
+// NeedCopy records that sym, defined by a shared object, needs its own
+// storage in this output: something references it directly, with no GOT
+// indirection, which only works if the address is fixed at link time — and a
+// shared object's own copy has no fixed address until the loader picks one.
+// Repeated calls for the same symbol are harmless.
+func (r *Reqs) NeedCopy(sym *image.Sym) {
+	if sym.Has(image.NeedsCopy) {
+		return
+	}
+	sym.Set(image.NeedsCopy)
+	r.Copy = append(r.Copy, sym)
 }
 
 // AddDyn records a dynamic relocation against a slot in a synthetic section.

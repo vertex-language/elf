@@ -1,9 +1,8 @@
-package x86_64
+package arm64
 
 import (
 	"fmt"
 
-	"github.com/vertex-language/elf"
 	"github.com/vertex-language/elf/backend"
 	"github.com/vertex-language/elf/image"
 )
@@ -41,7 +40,7 @@ func (b Backend) scanOne(img *image.Image, reqs *backend.Reqs,
 		return nil
 	}
 	if k == backend.KindUnknown {
-		return fmt.Errorf("x86_64: %s+%#x: relocation type %d: %w",
+		return fmt.Errorf("arm64: %s+%#x: relocation type %d: %w",
 			ch, r.Offset, r.Type, backend.ErrUnsupportedReloc)
 	}
 	if r.Sym == nil {
@@ -49,24 +48,22 @@ func (b Backend) scanOne(img *image.Image, reqs *backend.Reqs,
 	}
 
 	switch {
-	case k == backend.KindGotPC && canRelaxGot(reqs, r):
-		// The load will be rewritten to a direct lea, so no slot is needed.
-		// Apply calls this same predicate, which is what keeps the two
-		// halves of the decision from drifting apart.
-		return nil
-
 	case k.NeedsGot():
-		if k == backend.KindTlsGd {
+		switch k {
+		case backend.KindTlsGd, backend.KindTlsDesc:
+			// A general-dynamic or TLSDESC reference here is an ADRP/ADD (or
+			// ADRP/LDR/ADD) pair — two or three relocations against the same
+			// symbol for one logical access. AddTlsGot returns the same slot
+			// on every call for a given symbol, so each one agrees on where
+			// the pair lives.
 			reqs.AddTlsGot(img, r.Sym)
-			return nil
-		}
-		if k == backend.KindTlsLd {
+		case backend.KindTlsLd:
 			reqs.AddTlsIndex(img)
-			return nil
-		}
-		reqs.AddGot(img, r.Sym)
-		if k == backend.KindTlsIe {
+		case backend.KindTlsIe:
+			reqs.AddGot(img, r.Sym)
 			r.Sym.Set(image.NeedsTlsIe)
+		default:
+			reqs.AddGot(img, r.Sym)
 		}
 		return nil
 
@@ -126,36 +123,4 @@ func needsPlt(reqs *backend.Reqs, sym *image.Sym) bool {
 		return true
 	}
 	return sym.Preemptible()
-}
-
-// canRelaxGot reports whether a GOT load may be rewritten as a direct lea.
-//
-// Three conditions, and the third is the one that is easy to miss. The symbol
-// must be non-preemptible, or the indirection is what makes preemption work.
-// The relocation type must be one of the relaxable forms. And the addend must
-// be exactly -4: the assembler also emits these types for instructions that
-// load part of a GOT entry rather than the whole of it — movl x@GOTPCREL+4(%rip)
-// reads the high half — and rewriting one of those to an lea produces code
-// that computes an address nobody asked for.
-func canRelaxGot(reqs *backend.Reqs, r image.Reloc) bool {
-	if r.Sym == nil || !r.Sym.Defined() || r.Sym.Preemptible() {
-		return false
-	}
-	if ifunc(r.Sym) {
-		// An ifunc's address is what its resolver returns, so the
-		// indirection is the entire point.
-		return false
-	}
-	if r.Sym.Class == image.SymShared {
-		return false
-	}
-	if r.Addend != -4 {
-		return false
-	}
-	switch elf.RelocX86_64(r.Type) {
-	case elf.R_X86_64_GOTPCRELX, elf.R_X86_64_REX_GOTPCRELX,
-		elf.R_X86_64_CODE_4_GOTPCRELX:
-		return true
-	}
-	return false
 }

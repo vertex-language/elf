@@ -43,6 +43,14 @@ func NewSynthetic(name string, typ elf.SHType, flags SecFlags, align, entsize ui
 	}
 }
 
+// SetGen attaches a content generator, replacing any set at construction.
+//
+// A synthetic that needs to know about relocations queued after it was
+// created — .got and .got.plt are sized and registered during Scan, before
+// the pass that decides what dynamic relocations point into them has run —
+// is created with a nil generator and given one once that decision exists.
+func (s *Synthetic) SetGen(gen func(*Image) ([]byte, error)) { s.gen = gen }
+
 // SetSize declares how many bytes the synthetic will occupy. It panics after
 // the image is sealed, because resizing a chunk that has already been placed
 // moves everything after it without moving the addresses computed from it.

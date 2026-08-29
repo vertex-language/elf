@@ -39,6 +39,9 @@ The module is layered, and each package only imports the ones below it:
 | `backend` | The per-architecture interface a linker backend implements (`Scan`, `Apply`, PLT/GOT shapes, relaxation, thunks). |
 | `link` | The link pipeline: resolve, GC, layout, relocate, emit. Never imports a backend directly. |
 | `x86_64` | The AMD64 backend. Blank-import it to register support for that architecture. |
+| `arm64` | The AArch64 backend. Blank-import it to register support for that architecture. |
+| `riscv64` | The RISC-V RV64 backend. Blank-import it to register support for that architecture. |
+| `i386` | The Intel 386 backend. Static linking, and dynamic linking wherever nothing needs a PLT; see the package doc for the %ebx/GOT-base gap that excludes PLT support specifically. |
 
 ## Quick start
 

@@ -23,9 +23,17 @@ func (b Backend) Apply(s *backend.Site, r image.Reloc) error {
 	p := s.P(off)
 	a := r.Addend
 
-	sym, err := s.SymAddr(off, r)
-	if err != nil {
-		return err
+	// A PLT32 call to a symbol with no definition in this link is not an
+	// error: it is the ordinary shape of a call into a shared library, and
+	// PltEntryAddr below supplies the address SymAddr has none for. Every
+	// other relocation type still requires a real value.
+	var sym uint64
+	var err error
+	if r.Sym == nil || r.Sym.PltIndex == image.NoIndex {
+		sym, err = s.SymAddr(off, r)
+		if err != nil {
+			return err
+		}
 	}
 
 	switch typ {
@@ -116,6 +124,22 @@ func (b Backend) Apply(s *backend.Site, r image.Reloc) error {
 			return err
 		}
 		return s.PutU64(off, uint64(int64(v)+a))
+
+	case elf.R_X86_64_GOTTPOFF, elf.R_X86_64_CODE_4_GOTTPOFF,
+		elf.R_X86_64_CODE_5_GOTTPOFF, elf.R_X86_64_CODE_6_GOTTPOFF:
+		// Initial-exec: a RIP-relative load of the GOT slot holding this
+		// symbol's thread-pointer offset, the same 32-bit field a GOTPCREL
+		// load computes — link/dynamic.go is what decided whether that slot
+		// holds a link-time tpoff or is left for a dynamic TPREL relocation.
+		// The relaxation this psABI defines for it (rewriting the load into
+		// a direct add once the output turns out not to need the GOT
+		// indirection at all) is not implemented, matching the GOTPCRELX
+		// family above.
+		slot, err := s.Reqs.GotSlotAddr(r.Sym)
+		if err != nil {
+			return fmt.Errorf("x86_64: %s+%#x: %w", s.Chunk, off, err)
+		}
+		return putPC32(s, off, r, int64(slot)+a-int64(p))
 
 	case elf.R_X86_64_GOTOFF64:
 		return s.PutU64(off, uint64(int64(sym)+a-int64(s.Reqs.GotAddr())))
@@ -248,20 +272,11 @@ func symSize(r image.Reloc) uint64 {
 }
 
 // tpOff converts an address in the TLS block to an offset from the thread
-// pointer.
-//
-// Variant II places the static block immediately below the thread pointer, so
-// the offset is the symbol's position within the block minus the block's
-// aligned size, and is therefore negative.
+// pointer, failing when there is no TLS block to measure from.
 func tpOff(s *backend.Site, sym uint64) (int64, error) {
 	if s.Reqs.TlsSize == 0 {
 		return 0, fmt.Errorf("x86_64: %s: thread-local reference in an output with no TLS block",
 			s.Chunk)
 	}
-	align := s.Reqs.TlsAlign
-	if align == 0 {
-		align = 1
-	}
-	size := (s.Reqs.TlsSize + align - 1) &^ (align - 1)
-	return int64(sym) - int64(s.Reqs.TlsAddr) - int64(size), nil
+	return Backend{}.TpOff(s.Reqs.TlsAddr, s.Reqs.TlsSize, s.Reqs.TlsAlign, sym), nil
 }
