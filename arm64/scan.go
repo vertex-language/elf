@@ -3,6 +3,7 @@ package arm64
 import (
 	"fmt"
 
+	"github.com/vertex-language/elf"
 	"github.com/vertex-language/elf/backend"
 	"github.com/vertex-language/elf/image"
 )
@@ -44,6 +45,12 @@ func (b Backend) scanOne(img *image.Image, reqs *backend.Reqs,
 			ch, r.Offset, r.Type, backend.ErrUnsupportedReloc)
 	}
 	if r.Sym == nil {
+		return nil
+	}
+	// The LO12 half of an ADRP pair is an offset within a page, and the
+	// loader places images on page boundaries, so it is fixed at link time
+	// in any output: no dynamic relocation, whatever the ADRP's is.
+	if k == backend.KindAbs && pageOffset(r.Type) {
 		return nil
 	}
 
@@ -123,4 +130,17 @@ func needsPlt(reqs *backend.Reqs, sym *image.Sym) bool {
 		return true
 	}
 	return sym.Preemptible()
+}
+
+// pageOffset reports whether typ is one of the LO12 relocations completing
+// an ADRP: the low twelve bits of an address.
+func pageOffset(typ uint32) bool {
+	switch elf.RelocAArch64(typ) {
+	case elf.R_AARCH64_ADD_ABS_LO12_NC,
+		elf.R_AARCH64_LDST8_ABS_LO12_NC, elf.R_AARCH64_LDST16_ABS_LO12_NC,
+		elf.R_AARCH64_LDST32_ABS_LO12_NC, elf.R_AARCH64_LDST64_ABS_LO12_NC,
+		elf.R_AARCH64_LDST128_ABS_LO12_NC:
+		return true
+	}
+	return false
 }

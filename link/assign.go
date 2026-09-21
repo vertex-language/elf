@@ -62,6 +62,11 @@ func (l *Linker) assign(img *image.Image) error {
 			// needs its own padding computation.
 			s.Off = segOff + (s.Addr - segAddr)
 			s.Size = sectionSize(s)
+			if s.Name == relroPadName && l.opts.Relro != RelroNone {
+				// RELRO must end on a page boundary for the loader to
+				// protect it, and what follows must start past it.
+				s.Size = alignUp(s.Addr, page) - s.Addr
+			}
 
 			addr = s.Addr + s.Size
 
@@ -75,12 +80,18 @@ func (l *Linker) assign(img *image.Image) error {
 			seg.Add(s)
 		}
 
-		// RELRO must end on a page boundary for the loader to protect it.
-		if l.opts.Relro != RelroNone {
-			addr = l.closeRelro(p, addr, page)
-		}
-
 		seg.Cover()
+		if i == 0 {
+			// Cover starts the segment at its first section; the headers
+			// come first, so that the loader maps them with the rest.
+			fileEnd, memEnd := seg.Off+seg.Filesz, seg.Vaddr+seg.Memsz
+			if len(seg.Sections) == 0 {
+				fileEnd, memEnd = img.HeaderSize, addr
+			}
+			base := segAddr - img.HeaderSize
+			seg.Off, seg.Vaddr, seg.Paddr = 0, base, base
+			seg.Filesz, seg.Memsz = fileEnd, memEnd-base
+		}
 		img.AddSegment(seg)
 	}
 
@@ -109,31 +120,6 @@ func congruent(off, addr, page uint64) uint64 {
 		return off
 	}
 	return off + ((addr - off) & (page - 1))
-}
-
-// closeRelro rounds the address past the end of the RELRO region and sizes the
-// padding section that fills the gap.
-//
-// The loader mprotects whole pages, so a region ending mid-page either leaves
-// its tail writable or takes the following section read-only with it. The
-// padding is NOBITS, so it costs no file bytes.
-func (l *Linker) closeRelro(p segPlan, addr, page uint64) uint64 {
-	var pad *image.OutputSection
-	inRelro := false
-	for _, s := range p.sections {
-		if relroSection(s) {
-			inRelro = true
-		}
-		if s.Name == relroPadName {
-			pad = s
-		}
-	}
-	if !inRelro || pad == nil {
-		return addr
-	}
-	end := alignUp(addr, page)
-	pad.Size = end - pad.Addr
-	return end
 }
 
 // segPlan is one PT_LOAD before addresses exist.
@@ -232,6 +218,21 @@ func (l *Linker) metaSegments(img *image.Image) {
 		}
 		seg.Cover()
 		img.AddSegment(seg)
+	}
+
+	// PT_PHDR, which must come before every loadable segment, tells the
+	// dynamic linker where the program headers are mapped; bionic's refuses
+	// an executable without one. It lies inside the first PT_LOAD.
+	if l.opts.Output == OutputExec || l.opts.Output == OutputPIE {
+		if loads := img.Segments; len(loads) > 0 && loads[0].Off == 0 {
+			phoff := uint64(format.EhdrSize(img.Target.Class))
+			seg := image.NewSegment(elf.PT_PHDR, elf.PF_R, wordAlign(img.Target.Class))
+			seg.Off = phoff
+			seg.Vaddr, seg.Paddr = loads[0].Vaddr+phoff, loads[0].Vaddr+phoff
+			seg.Filesz = img.HeaderSize - phoff
+			seg.Memsz = seg.Filesz
+			img.Segments = append([]*image.Segment{seg}, img.Segments...)
+		}
 	}
 
 	if s := img.FindSection(".interp"); s != nil {

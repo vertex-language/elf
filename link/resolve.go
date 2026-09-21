@@ -94,7 +94,7 @@ func (l *Linker) resolve(img *image.Image) error {
 		s.Referenced = true
 		r.rank[s] = rankUndef
 	}
-	if l.opts.Output != OutputRelocatable {
+	if l.opts.wantsEntry() {
 		s, _ := img.Syms.Insert(l.opts.entryName())
 		s.Referenced = true
 		if _, ok := r.rank[s]; !ok {
@@ -116,7 +116,7 @@ func (l *Linker) resolve(img *image.Image) error {
 
 	l.needed = r.needed
 
-	if l.opts.Output != OutputRelocatable {
+	if l.opts.wantsEntry() {
 		if s := img.Syms.Lookup(l.opts.entryName()); s != nil && s.Defined() {
 			img.EntrySym = s
 		}

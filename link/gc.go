@@ -113,7 +113,7 @@ func (l *Linker) roots(img *image.Image, mark func(*image.Chunk)) {
 	}
 
 	// The entry point, and anything the caller named explicitly.
-	if l.opts.Output != OutputRelocatable {
+	if l.opts.wantsEntry() {
 		markSym(l.opts.entryName())
 	}
 	markSym("_init")

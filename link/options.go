@@ -267,6 +267,12 @@ func (o *Options) Pic() bool { return o.Output.Pic() }
 func (o *Options) bindNow() bool { return o.BindNow || o.Relro == RelroFull }
 
 // entryName returns the entry symbol to look up.
+// wantsEntry reports whether the output has an entry point: every loadable
+// output but a shared object that names none, which ld leaves at zero.
+func (o *Options) wantsEntry() bool {
+	return o.Output != OutputRelocatable && (o.Output != OutputShared || o.Entry != "")
+}
+
 func (o *Options) entryName() string {
 	if o.Entry != "" {
 		return o.Entry

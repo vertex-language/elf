@@ -215,7 +215,9 @@ func (l *Linker) commit(img *image.Image) error {
 		s.Index = uint32(i + 1)
 	}
 
-	if l.opts.Output != OutputRelocatable && img.Entry == 0 && l.opts.EntryAddr == 0 {
+	// A shared object needs no entry point: e_entry is zero unless one was
+	// named and found, as with ld.
+	if l.opts.wantsEntry() && img.Entry == 0 && l.opts.EntryAddr == 0 {
 		if !l.opts.AllowUndefined {
 			return fmt.Errorf("link: %q: %w", l.opts.entryName(), ErrNoEntry)
 		}
