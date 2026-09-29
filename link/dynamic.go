@@ -3,6 +3,7 @@ package link
 import (
 	"encoding/binary"
 	"fmt"
+	"sort"
 
 	"github.com/vertex-language/elf"
 	"github.com/vertex-language/elf/backend"
@@ -134,6 +135,17 @@ func (l *Linker) wireGotPlt(img *image.Image) error {
 				Slot: reqs.GotPlt, Off: uint64(sym.GotPltIndex) * reqs.GotShape().EntrySize,
 			})
 		}
+	})
+
+	// In PLT order, which is not the order the symbols were walked in. A
+	// PLT entry pushes its own index before jumping to the resolver, and a
+	// lazy-binding loader reads that index as a position in DT_JMPREL:
+	// glibc's resolves entry n from the n-th relocation there. Out of order,
+	// the first call through one entry binds its slot to another entry's
+	// function. A loader that binds everything at load time -- bionic's --
+	// never reads the index, which is how the order went unnoticed.
+	sort.SliceStable(reqs.RelaPlt, func(i, j int) bool {
+		return reqs.RelaPlt[i].Sym.PltIndex < reqs.RelaPlt[j].Sym.PltIndex
 	})
 
 	if reqs.Got != nil {

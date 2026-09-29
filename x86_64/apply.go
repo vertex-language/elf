@@ -23,15 +23,22 @@ func (b Backend) Apply(s *backend.Site, r image.Reloc) error {
 	p := s.P(off)
 	a := r.Addend
 
-	// A PLT32 call to a symbol with no definition in this link is not an
-	// error: it is the ordinary shape of a call into a shared library, and
-	// PltEntryAddr below supplies the address SymAddr has none for. Every
-	// other relocation type still requires a real value.
+	// A symbol with a PLT entry may still be defined in this link: a
+	// function of the program's own that something also calls through the
+	// PLT. Its address is its own, and a reference that takes it -- a lea
+	// of the function, PC32 -- has to get it, not zero. Only a symbol no
+	// input defines, the ordinary shape of a function in a shared library,
+	// has no address but its PLT entry: PltEntryAddr supplies that below
+	// for a call, and is the function's canonical address for anything
+	// else. Every other relocation type still requires a real value.
 	var sym uint64
 	var err error
-	if r.Sym == nil || r.Sym.PltIndex == image.NoIndex {
-		sym, err = s.SymAddr(off, r)
-		if err != nil {
+	sym, err = s.SymAddr(off, r)
+	if err != nil {
+		if r.Sym == nil || r.Sym.PltIndex == image.NoIndex {
+			return err
+		}
+		if sym, err = s.Reqs.PltEntryAddr(r.Sym); err != nil {
 			return err
 		}
 	}
@@ -208,10 +215,14 @@ func applyGotPCRel(s *backend.Site, r image.Reloc, off, p uint64, a int64,
 		if err := relaxToLea(s, off); err != nil {
 			return err
 		}
-		// The lea computes the symbol's own address rather than its slot's,
-		// so the addend that pointed at the slot is not part of the result.
-		// The instruction is the same length, so P is unchanged.
-		return putPC32(s, off, r, int64(sym)+a+4-int64(p))
+		// The lea computes the symbol's own address where the mov loaded
+		// its slot's contents, and by the same formula, S + A - P: the -4
+		// addend is the distance from the field to the end of the
+		// instruction, which is where RIP-relative addressing counts from
+		// whichever of the two it is. Adding the 4 back made every relaxed
+		// load land four bytes past its symbol. The instruction is the same
+		// length, so P is unchanged.
+		return putPC32(s, off, r, int64(sym)+a-int64(p))
 	}
 
 	slot, err := s.Reqs.GotSlotAddr(r.Sym)
