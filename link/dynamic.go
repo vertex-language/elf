@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/vertex-language/elf"
 	"github.com/vertex-language/elf/backend"
@@ -59,6 +60,10 @@ type dynEntry struct {
 	val uint64
 	sec *image.Synthetic
 	off uint64
+	// out names an output section whose address -- or, with size, whose
+	// length -- is the value: one laid out from inputs, not synthesized.
+	out  string
+	size bool
 }
 
 // wireGotPlt decides how every GOT and PLT slot gets its content and attaches
@@ -893,6 +898,22 @@ func (l *Linker) buildDynEntries(dynStr, dynSym, hash, relaDyn, relaPlt *image.S
 		}
 	}
 
+	// The arrays of constructors and destructors the loader runs: without
+	// these, a C++ global's dynamic initializer -- every static object the
+	// runtime units define with one -- never runs.
+	for _, a := range []struct {
+		name         string
+		tag, sizeTag elf.DynTag
+	}{
+		{".preinit_array", elf.DT_PREINIT_ARRAY, elf.DT_PREINIT_ARRAYSZ},
+		{".init_array", elf.DT_INIT_ARRAY, elf.DT_INIT_ARRAYSZ},
+		{".fini_array", elf.DT_FINI_ARRAY, elf.DT_FINI_ARRAYSZ},
+	} {
+		if l.hasInputSection(a.name) {
+			e = append(e, dynEntry{tag: a.tag, out: a.name}, dynEntry{tag: a.sizeTag, out: a.name, size: true})
+		}
+	}
+
 	var flags, flags1 uint32
 	if l.reqs.TextRelocs {
 		add(elf.DT_TEXTREL, 0)
@@ -917,6 +938,19 @@ func (l *Linker) buildDynEntries(dynStr, dynSym, hash, relaDyn, relaPlt *image.S
 	return e
 }
 
+// hasInputSection reports whether an input contributes a section that
+// lands in the output section name: name itself, or name.suffix.
+func (l *Linker) hasInputSection(name string) bool {
+	for _, in := range l.img.Inputs {
+		for _, c := range in.Chunks {
+			if c.Size > 0 && (c.Name == name || strings.HasPrefix(c.Name, name+".")) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // generateDynamic writes .dynamic once every section it references has an
 // address.
 func (l *Linker) generateDynamic(entries []dynEntry, cl elf.Class) ([]byte, error) {
@@ -925,6 +959,18 @@ func (l *Linker) generateDynamic(entries []dynEntry, cl elf.Class) ([]byte, erro
 		v := ent.val
 		if ent.sec != nil {
 			v = ent.sec.Chunk.Addr() + ent.off
+		}
+		if ent.out != "" {
+			v = 0
+			for _, sec := range l.img.Sections {
+				if sec.Name == ent.out {
+					v = sec.Addr
+					if ent.size {
+						v = sec.Size
+					}
+					break
+				}
+			}
 		}
 		d := format.Dyn{Tag: ent.tag, Val: v}
 		d.Encode(b, cl)

@@ -534,6 +534,14 @@ func (r *resolver) merge(in *image.Input, s *obj.Symbol, chunks map[uint32]*imag
 		return g, nil
 	}
 
+	// A definition in a section whose COMDAT group lost its election is
+	// the winning group's, which defines the same name: this one is gone
+	// from the link with its section, and is no more than a reference.
+	if ch := chunks[s.Shndx]; ch != nil && ch.Discarded {
+		g.Referenced = true
+		return g, nil
+	}
+
 	cur := r.rank[g]
 
 	// Two commons do not clash. The result is the largest size and the
